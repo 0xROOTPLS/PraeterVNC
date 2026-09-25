@@ -1,0 +1,9 @@
+[package]
+name = "praeter-testapp"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+windows = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

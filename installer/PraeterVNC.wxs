@@ -1,0 +1,66 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:fw="http://wixtoolset.org/schemas/v4/wxs/firewall"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="PraeterVNC" Manufacturer="PraeterVNC" Version="$(Version)" UpgradeCode="E960EB3A-3B3A-482D-B657-D5C08F26A5B9"
+           Scope="perMachine" Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of PraeterVNC is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="praetervnc.ico" SourceFile="$(Ico)" />
+    <Property Id="ARPPRODUCTICON" Value="praetervnc.ico" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <Property Id="APPDIR">
+      <RegistrySearch Root="HKLM" Key="SOFTWARE\PraeterVNC" Name="InstallDir" Type="raw" />
+    </Property>
+    <Property Id="SASGEN">
+      <RegistrySearch Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" Name="SoftwareSASGeneration" Type="raw" />
+    </Property>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="PraeterVNC">
+        <Component Id="Server" Bitness="always64">
+          <File Id="exe" Source="$(Exe)" KeyPath="yes">
+            <fw:FirewallException Id="Firewall" Name="PraeterVNC" Scope="any" Profile="all" />
+          </File>
+          <ServiceInstall Id="Service" Name="PraeterVNC" DisplayName="PraeterVNC Server" Description="Low-latency VNC server."
+                          Type="ownProcess" Start="auto" ErrorControl="normal" Arguments="--service">
+            <util:ServiceConfig FirstFailureActionType="restart" SecondFailureActionType="restart" ThirdFailureActionType="restart"
+                                RestartServiceDelayInSeconds="5" ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <ServiceControl Id="ServiceControl" Name="PraeterVNC" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="PraeterVNC" Type="string" Value="&quot;[#exe]&quot; --tray" />
+        </Component>
+
+        <Component Id="License" Bitness="always64">
+          <File Id="license" Source="$(Root)\LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="Notices" Bitness="always64">
+          <File Id="notices" Source="$(Root)\THIRD-PARTY-NOTICES.txt" KeyPath="yes" />
+        </Component>
+
+        <Component Id="Config" Bitness="always64">
+          <RegistryKey Root="HKLM" Key="SOFTWARE\PraeterVNC" ForceCreateOnInstall="yes">
+            <PermissionEx Sddl="D:P(A;OICI;KA;;;SY)(A;OICI;KA;;;BA)" />
+            <RegistryValue Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+          </RegistryKey>
+          <RemoveRegistryKey Root="HKLM" Key="SOFTWARE\PraeterVNC" Action="removeOnUninstall" />
+          <util:RemoveFolderEx On="uninstall" Property="APPDIR" />
+        </Component>
+
+        <Component Id="SasPolicy" Bitness="always64" Condition="NOT SASGEN">
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" Name="SoftwareSASGeneration"
+                         Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="Shortcut" Bitness="always64">
+        <Shortcut Id="SettingsShortcut" Name="PraeterVNC Settings" Target="[#exe]" Arguments="--settings" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\PraeterVNC" Name="Shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Package>
+</Wix>

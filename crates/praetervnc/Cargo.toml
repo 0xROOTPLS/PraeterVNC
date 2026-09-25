@@ -1,0 +1,15 @@
+[package]
+name = "praetervnc"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+windows = { workspace = true }
+libz-rs-sys = "0.6"
+turbojpeg = { version = "1.5", default-features = false, features = ["cmake"] }
+parking_lot = "0.12"
+rayon = "1.10"
+des = "0.8"
+
+mimalloc = { version = "0.1", default-features = false }
