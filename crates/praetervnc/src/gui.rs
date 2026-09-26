@@ -494,12 +494,18 @@ fn install_from_app(owner: Option<HWND>) {
     }
 }
 
+fn is_service() -> bool {
+    TRAY.with(|t| t.try_borrow().ok().is_some_and(|t| t.as_ref().is_some_and(|t| matches!(t.mode, Mode::Service(_)))))
+}
+
 unsafe extern "system" fn tray_proc(h: HWND, m: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     let taskbar = TRAY.with(|t| t.try_borrow().ok().and_then(|t| t.as_ref().map(|t| t.taskbar))).unwrap_or(u32::MAX);
     match m {
         WM_TRAY => {
             match (lp.0 & 0xFFFF) as u32 {
                 WM_CONTEXTMENU => show_menu(),
+                // Service settings need UAC.
+                NIN_SELECT | 1025 if is_service() => show_menu(),
                 NIN_SELECT | 1025 => show_settings(),
                 _ => {}
             }
