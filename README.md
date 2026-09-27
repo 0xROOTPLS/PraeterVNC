@@ -46,26 +46,23 @@ python tools/package.py        # dist\: MSI (WiX 5, repo-local dotnet tool), por
 ## Design
 
 Capture
-- DXGI Desktop Duplication, one thread per output (MMCSS, raised GPU priority).
-- Dirty and move rects -> 64 px tiles, diffed in parallel against immutable `Arc` snapshots.
-- Per-client tile model: dirty = `Arc` pointer inequality. All clients share one capture.
+- DXGI Desktop Duplication w/ one thread per output (MMCSS, GPU priority).
+- Dirty and move rects are 64 px tiles diffed in parallel against immutable `Arc` snapshots.
+- Per-client tile model: dirty = `Arc` pointer inequality. (All clients share one capture)
 
 Encoding
 - Tight (fill, mono, palette, zlib, JPEG), ZRLE, TRLE, JPEG-21, Hextile, Raw, CopyRect.
-- Rich and alpha cursors, PointerPos, DesktopSize/ExtendedDesktopSize, LastRect, Fence, ContinuousUpdates, QEMU key events, ExtendedClipboard (UTF-8).
-- Parallel zlib in one valid stream: dictionary-primed chunks, sync-flushed.
-- Photos go to JPEG, text stays lossless.
+- Rich + alpha cursors, PointerPos, DesktopSize/ExtendedDesktopSize, LastRect, Fence, ContinuousUpdates, QEMU key events, ExtendedClipboard.
+- Parallel zlib in one valid stream (dictionary primed chunks, sync flushed)
 - Scroll detection -> CopyRect.
-- Motion tiles get cheaper JPEG (4:2:0), then a lossless refresh 150 ms after they settle.
+- Motion tiles encode w/ cheaper JPEG (4:2:0)
 
 Scheduling and flow control
-- Per update: urgent work (small changes, near the pointer, scroll-exposed), then oldest work within the encode budget, then lossless refresh.
-- Legacy viewers are pipelined. ContinuousUpdates clients are paced by fences.
-- `pipe.rs` models the bottleneck from acks alone. Works through proxies and SSH tunnels.
-- Updates leave just before the link drains, never queued.
-- Motion JPEG quality follows the link: down above ~28 ms link time per update, up below ~14 ms.
-- Large changes and lossless refresh are split into link-sized chunks.
-- Below ~100 Mbit: more zlib effort, ZRLE instead of TRLE.
+- Per update: urgent work (small changes, near pointer, scroll) -> oldest work within the encode budget -> lossless refresh.
+- Motion JPEG quality is determined via link speed.
+- Updates are never queued.
+- Large changes and lossless refresh are split into chunks.
+- Below ~100 Mbit: more zlib effort - ZRLE instead of TRLE.
 
 ## Results
 
@@ -73,19 +70,11 @@ See [BENCHMARKS.md](BENCHMARKS.md).
 
 ## Tooling
 
-- `crates/testapp`: test window playing scenarios (ticker, typing, scroll, drag, video) with a frame-ID barcode. Logs each frame's present time.
-- `crates/bench`: headless RFB client. Reports frames, latency (p50/p90/p99), bandwidth, full-paint time and server CPU. `--verify` checks the final framebuffer.
-- `crates/netem`: TCP proxy with delay and a bandwidth cap.
-- `tools/bench.py --servers praeter,tightvnc --scenarios ... --profiles tightvnc28,realvnc7,tigervnc [--rtt MS] [--mbit N] [--verify]`
-- `PRAETER_PROBE=1`: per-stage latency. `PRAETER_TRACE=1`: logs every update and ack.
+- `crates/testapp`: test window / benchmark of scenarios (ticker, typing, scroll, drag, video) with a frame-ID barcode.
+- `crates/bench`: headless RFB client. Reports frames, latency, bandwidth, paint time and server CPU.
+- `crates/netem`: TCP proxy with delay and a bandwidth cap for artificial network latency.
+- `PRAETER_PROBE=1`: per-stage latency.
 
-## Limitations
-
-- Secure desktop (UAC, lock and login screens) needs service mode.
-- VNC auth only (no TLS/VeNCrypt), 8-character ASCII passwords.
-- Reduced-colour viewer settings (e.g. RealVNC *Picture quality: Low*) are honored. JPEG needs 16-bit colour or more.
-- Clipboard is text only. No file transfer, IPv6 or rotated monitors.
-- Unsigned exe: expect SmartScreen warnings. Some antivirus flags any VNC server.
 
 ## License
 
