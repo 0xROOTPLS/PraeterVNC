@@ -240,6 +240,7 @@ fn handshake(s: &mut TcpStream, srv: &Server, ip: Option<IpAddr>) -> io::Result<
                 srv.guard.ok(ip);
             } else if srv.guard.failed(ip, set.max_attempts, Duration::from_secs(set.block_secs as u64)) {
                 crate::log!("{ip}: blocked for {} s after {} failed logins", set.block_secs, set.max_attempts);
+                srv.changed();
             }
         }
         if !ok {

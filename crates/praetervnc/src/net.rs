@@ -1,8 +1,52 @@
-use std::net::TcpStream;
+use std::net::{IpAddr, TcpStream, UdpSocket};
 use std::os::windows::io::AsRawSocket;
-use windows::Win32::Foundation::POINT;
+use windows::Win32::Foundation::{CloseHandle, POINT};
+use windows::Win32::NetworkManagement::IpHelper::{GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER};
 use windows::Win32::Networking::WinSock::*;
+use windows::Win32::System::Diagnostics::ToolHelp::*;
 use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+/// Address of the default-route interface; nothing is sent.
+pub fn lan_ip() -> Option<IpAddr> {
+    let s = UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    s.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_unspecified() && !ip.is_loopback())
+}
+
+/// Exe name of the process listening on IPv4 `port`, if any.
+pub fn port_owner(port: u16) -> Option<String> {
+    let pid = unsafe {
+        let mut n = 0u32;
+        let _ = GetExtendedTcpTable(None, &mut n, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0);
+        let mut buf = vec![0u32; n as usize / 4 + 64];
+        n = buf.len() as u32 * 4;
+        if GetExtendedTcpTable(Some(buf.as_mut_ptr() as *mut _), &mut n, false, AF_INET.0 as u32, TCP_TABLE_OWNER_PID_LISTENER, 0) != 0 {
+            return None;
+        }
+        let rows = std::slice::from_raw_parts(buf.as_ptr().add(1) as *const MIB_TCPROW_OWNER_PID, buf[0] as usize);
+        rows.iter().find(|r| u16::from_be(r.dwLocalPort as u16) == port)?.dwOwningPid
+    };
+    Some(process_name(pid).unwrap_or_else(|| format!("process {pid}")))
+}
+
+fn process_name(pid: u32) -> Option<String> {
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut name = None;
+        let mut ok = Process32FirstW(snap, &mut e).is_ok();
+        while ok {
+            if e.th32ProcessID == pid {
+                let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                name = Some(String::from_utf16_lossy(&e.szExeFile[..n]));
+                break;
+            }
+            ok = Process32NextW(snap, &mut e).is_ok();
+        }
+        let _ = CloseHandle(snap);
+        name
+    }
+}
 
 pub fn tune(s: &TcpStream) {
     unsafe {

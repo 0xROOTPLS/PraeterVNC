@@ -32,6 +32,8 @@ pub struct Status {
     pub error: Option<String>,
     /// (peer, seconds connected)
     pub clients: Vec<(String, u64)>,
+    /// (address, seconds left)
+    pub blocked: Vec<(String, u64)>,
 }
 
 pub struct Server {
@@ -42,6 +44,7 @@ pub struct Server {
     settings: Mutex<Arc<Settings>>,
     clients: Mutex<Vec<Client>>,
     listen: Mutex<Listen>,
+    paused: AtomicBool,
     gen: AtomicU64,
     on_change: Mutex<Option<Box<dyn Fn() + Send>>>,
 }
@@ -58,6 +61,7 @@ impl Server {
             settings: Mutex::new(Arc::new(s)),
             clients: Mutex::new(Vec::new()),
             listen: Mutex::new(Listen::default()),
+            paused: AtomicBool::new(false),
             gen: AtomicU64::new(0),
             on_change: Mutex::new(None),
         });
@@ -76,12 +80,18 @@ impl Server {
         self.relisten();
     }
 
+    /// Stops or resumes listening; sessions stay up. Pausing returns once the port is free.
+    pub fn pause(self: &Arc<Self>, on: bool) {
+        self.paused.store(on, Ordering::SeqCst);
+        self.relisten();
+    }
+
     /// Called on client or listener changes.
     pub fn on_change(&self, f: impl Fn() + Send + 'static) {
         *self.on_change.lock() = Some(Box::new(f));
     }
 
-    fn changed(&self) {
+    pub fn changed(&self) {
         if let Some(f) = &*self.on_change.lock() {
             f();
         }
@@ -99,8 +109,9 @@ impl Server {
     }
 
     fn relisten(self: &Arc<Self>) {
-        let want = self.addr_for(&self.settings());
-        let wake = {
+        let paused = self.paused.load(Ordering::SeqCst);
+        let want = if paused { None } else { self.addr_for(&self.settings()) };
+        let (wake, stopped) = {
             let mut l = self.listen.lock();
             if l.init && l.want == want {
                 return;
@@ -110,9 +121,10 @@ impl Server {
             l.want = want.clone();
             l.error = None;
             let wake = l.bound.take();
-            let prev = l.thread.take();
+            let mut prev = l.thread.take();
             match want {
                 Some((host, port)) => {
+                    let prev = prev.take();
                     let me = self.clone();
                     l.thread = Some(std::thread::Builder::new().name("listen".into()).spawn(move || {
                         if let Some(p) = prev {
@@ -121,12 +133,13 @@ impl Server {
                         me.accept_loop(gen, &host, port);
                     }).unwrap());
                 }
+                None if paused => crate::log!("listener paused"),
                 None => {
                     l.error = Some("no password set".into());
                     crate::log!("not listening: no password set");
                 }
             }
-            wake
+            (wake, prev.filter(|_| paused))
         };
         // Unblocks the old accept().
         if let Some(mut a) = wake {
@@ -135,11 +148,18 @@ impl Server {
             }
             let _ = TcpStream::connect_timeout(&a, Duration::from_millis(300));
         }
+        if let Some(t) = stopped {
+            for _ in 0..40 {
+                if t.is_finished() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         self.changed();
     }
 
     fn accept_loop(self: Arc<Self>, gen: u64, host: &str, port: u16) {
-        let mut logged = false;
         let li = loop {
             if self.gen.load(Ordering::SeqCst) != gen {
                 return;
@@ -147,13 +167,11 @@ impl Server {
             match TcpListener::bind((host, port)) {
                 Ok(li) => break li,
                 Err(e) => {
-                    let msg = format!("can't listen on {host}:{port}: {e}");
-                    if !logged {
+                    let msg = listen_error(port, &e);
+                    if self.listen.lock().error.replace(msg.clone()).as_ref() != Some(&msg) {
                         crate::log!("{msg}; retrying");
-                        logged = true;
+                        self.changed();
                     }
-                    self.listen.lock().error = Some(msg);
-                    self.changed();
                     std::thread::sleep(Duration::from_millis(500));
                 }
             }
@@ -209,7 +227,19 @@ impl Server {
             listen: l.bound.map(|a| a.to_string()),
             error: l.error.clone(),
             clients: self.clients.lock().iter().map(|c| (c.peer.clone(), c.since.elapsed().as_secs())).collect(),
+            blocked: self.guard.list().into_iter().map(|(ip, d)| (ip.to_string(), d.as_secs() + 1)).collect(),
         }
+    }
+}
+
+fn listen_error(port: u16, e: &std::io::Error) -> String {
+    const IN_USE: i32 = 10048;
+    const ACCESS: i32 = 10013;
+    match (e.raw_os_error(), crate::net::port_owner(port)) {
+        (Some(IN_USE | ACCESS), Some(p)) => format!("Port {port} is in use by {p}"),
+        (Some(IN_USE), None) => format!("Port {port} is in use by another program"),
+        (Some(ACCESS), None) => format!("Port {port} is reserved by Windows"),
+        _ => format!("Can't listen on port {port}: {e}"),
     }
 }
 
@@ -225,6 +255,9 @@ impl Status {
         for (p, t) in &self.clients {
             s += &format!("client {t} {p}\n");
         }
+        for (p, t) in &self.blocked {
+            s += &format!("blocked {t} {p}\n");
+        }
         s
     }
 
@@ -234,14 +267,31 @@ impl Status {
             match l.split_once(' ') {
                 Some(("listen", v)) => s.listen = Some(v.into()),
                 Some(("error", v)) => s.error = Some(v.into()),
-                Some(("client", v)) => {
+                Some((k @ ("client" | "blocked"), v)) => {
                     if let Some((t, p)) = v.split_once(' ') {
-                        s.clients.push((p.into(), t.parse().unwrap_or(0)));
+                        let list = if k == "client" { &mut s.clients } else { &mut s.blocked };
+                        list.push((p.into(), t.parse().unwrap_or(0)));
                     }
                 }
                 _ => {}
             }
         }
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_roundtrip() {
+        let s = Status {
+            listen: Some("0.0.0.0:5900".into()),
+            error: Some("Port 5900 is in use by tvnserver.exe".into()),
+            clients: vec![("10.0.0.2:50123".into(), 42)],
+            blocked: vec![("10.0.0.9".into(), 55)],
+        };
+        assert_eq!(Status::decode(&s.encode()), s);
     }
 }

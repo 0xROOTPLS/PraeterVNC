@@ -44,6 +44,12 @@ impl Guard {
         false
     }
 
+    /// Blocked addresses and time left.
+    pub fn list(&self) -> Vec<(IpAddr, Duration)> {
+        let now = Instant::now();
+        self.m.lock().iter().filter_map(|(ip, e)| e.until.filter(|&u| u > now).map(|u| (*ip, u - now))).collect()
+    }
+
     pub fn ok(&self, ip: IpAddr) {
         self.m.lock().remove(&ip);
     }
@@ -68,7 +74,9 @@ mod tests {
         for _ in 0..10 {
             assert!(!g.failed(u, 0, b));
         }
+        assert_eq!(g.list().iter().map(|b| b.0).collect::<Vec<_>>(), [ip]);
         g.ok(ip);
         assert!(g.blocked(ip).is_none());
+        assert!(g.list().is_empty());
     }
 }

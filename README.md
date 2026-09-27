@@ -4,8 +4,8 @@ A performance focused VNC (RFB 3.3/3.7/3.8) server for Windows 10/11, written in
 
 ## How To Run?
 
-- **Portable**: run `PraeterVNC-<ver>-portable.exe`.
-- **Service**: install the MSI, or use tray menu -> *Install as service…* (or `praetervnc --install`). Runs as a SYSTEM service & starts a helper. 
+- **Portable**: run `PraeterVNC-<ver>-portable.exe`. Settings go in `praetervnc.ini` next to it (`%LOCALAPPDATA%\PraeterVNC` if that folder is read-only).
+- **Service**: install the MSI, or use tray menu -> *Install as service…* (or `praetervnc --install`). Runs as a SYSTEM service & starts a helper. Settings from the portable copy carry over.
 - **Console**: `praetervnc [options]` runs the server without a tray.
 
 | Option | Default | |
@@ -25,7 +25,7 @@ Requires an AVX2 CPU and Windows 10/11 x64!
 ## Security
 
 - Without a password Praeter listens on 127.0.0.1 only.
-- Failed logins are counted per IP.
+- Failed logins are counted per IP. Blocked IPs show in the tray.
 - VNC auth is DES challenge/response and the session is unencrypted.
 
 ## Recovery
@@ -82,7 +82,7 @@ See [BENCHMARKS.md](BENCHMARKS.md).
 ## Limitations
 
 - Secure desktop (UAC, lock and login screens) needs service mode.
-- VNC auth only (no TLS/VeNCrypt), 8-character passwords.
+- VNC auth only (no TLS/VeNCrypt), 8-character ASCII passwords.
 - Reduced-colour viewer settings (e.g. RealVNC *Picture quality: Low*) are honored. JPEG needs 16-bit colour or more.
 - Clipboard is text only. No file transfer, IPv6 or rotated monitors.
 - Unsigned exe: expect SmartScreen warnings. Some antivirus flags any VNC server.

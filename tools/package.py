@@ -36,10 +36,17 @@ def main():
     exe = os.path.join(TARGET, 'release', 'praetervnc.exe')
     check_paths(exe)
     ico = max(glob.glob(os.path.join(TARGET, 'release', 'build', 'praetervnc-*', 'out', 'praetervnc.ico')), key=os.path.getmtime)
-    shutil.rmtree(DIST, ignore_errors=True)
-    os.makedirs(DIST)
     msi = os.path.join(DIST, f'PraeterVNC-{ver}-x64.msi')
     portable = os.path.join(DIST, f'PraeterVNC-{ver}-portable.exe')
+    extras = [os.path.join(DIST, n) for n in ('LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', 'SHA256SUMS.txt')]
+    # Artifacts only: a portable copy run from dist keeps its ini and logs.
+    os.makedirs(DIST, exist_ok=True)
+    for f in glob.glob(os.path.join(DIST, 'PraeterVNC-*')) + extras:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except PermissionError:
+            sys.exit(f'{f} is in use; close the portable app first')
     run('dotnet', 'tool', 'restore')
     run('dotnet', 'wix', 'build', os.path.join('installer', 'PraeterVNC.wxs'), '-arch', 'x64',
         '-ext', 'WixToolset.Firewall.wixext', '-ext', 'WixToolset.Util.wixext',
@@ -53,8 +60,8 @@ def main():
     with open(os.path.join(DIST, 'SHA256SUMS.txt'), 'w', newline='\n') as f:
         for p in (msi, portable):
             f.write(f'{hashlib.sha256(open(p, "rb").read()).hexdigest()}  {os.path.basename(p)}\n')
-    for f in sorted(os.listdir(DIST)):
-        print(f'{f}  {os.path.getsize(os.path.join(DIST, f)) / 1e6:.2f} MB')
+    for f in [msi, portable] + extras:
+        print(f'{os.path.basename(f)}  {os.path.getsize(f) / 1e6:.2f} MB')
 
 
 if __name__ == '__main__':

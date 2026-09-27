@@ -2,15 +2,16 @@
 use crate::settings::{exe_path, Key, Store, KEY};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use windows::core::{w, Interface, HSTRING, PCWSTR};
+use windows::core::{w, Interface, BSTR, HSTRING, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Com::*;
 use windows::Win32::System::Registry::*;
 use windows::Win32::System::Services::*;
 use windows::Win32::System::Threading::*;
+use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Shell::*;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowThreadProcessId, IsWindow, PostMessageW, SW_SHOWNORMAL, WM_CLOSE};
 
 const RUN: PCWSTR = w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run");
 const UNINSTALL: PCWSTR = w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\PraeterVNC");
@@ -127,8 +128,10 @@ pub fn install() -> Result<String, String> {
     }
     let fresh = Key::open(HKEY_LOCAL_MACHINE, KEY, KEY_READ).map_or(true, |k| k.get_u32(w!("Port")).is_none());
     let reg = Store::Registry;
-    if fresh {
-        let s = Store::portable().load();
+    let portable = Store::portable();
+    // A configured portable copy's settings win.
+    if fresh || matches!(&portable, Store::Ini(p) if p.exists()) {
+        let s = portable.load();
         reg.save(&s, s.password.as_deref().map(Some)).map_err(|e| format!("settings: {e}"))?;
     } else {
         reg.save(&reg.load(), None).map_err(|e| format!("settings: {e}"))?;
@@ -182,8 +185,83 @@ pub fn install() -> Result<String, String> {
     unsafe {
         StartServiceW(s.0, None).map_err(|e| format!("start service: {e}"))?;
     }
+    // The portable app starts the new tray itself.
+    if !close_trays(&dir) {
+        let _ = run_as_user(&dst, "--tray");
+    }
     let pw = reg.load().password.is_some();
     Ok(format!("Installed to {} and started.{}", dir.display(), if pw { "" } else { " Set a password in Settings to accept connections." }))
+}
+
+pub fn start() -> Result<(), String> {
+    let m = scm(SC_MANAGER_CONNECT)?;
+    let s = open_service(&m, SERVICE_START).ok_or("The PraeterVNC service is not installed.")?;
+    unsafe { StartServiceW(s.0, None).map_err(|e| format!("Couldn't start the service: {e}")) }
+}
+
+pub fn stop() -> Result<(), String> {
+    let m = scm(SC_MANAGER_CONNECT)?;
+    let s = open_service(&m, SERVICE_STOP | SERVICE_QUERY_STATUS).ok_or("The PraeterVNC service is not installed.")?;
+    stop_service(&s);
+    match service_state() {
+        Some(st) if st != SERVICE_STOPPED => Err("The service didn't stop in time.".into()),
+        _ => Ok(()),
+    }
+}
+
+fn process_path(pid: u32) -> Option<PathBuf> {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut b = [0u16; 1024];
+        let mut n = b.len() as u32;
+        let r = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, windows::core::PWSTR(b.as_mut_ptr()), &mut n);
+        let _ = CloseHandle(h);
+        r.ok()?;
+        Some(PathBuf::from(String::from_utf16_lossy(&b[..n as usize])))
+    }
+}
+
+/// Closes trays running from `dir`; true if another tray (the portable app) remains.
+fn close_trays(dir: &Path) -> bool {
+    let mut closing = Vec::new();
+    let mut other = false;
+    unsafe {
+        let mut after = None;
+        while let Ok(h) = FindWindowExW(None, after, w!("PraeterVNCTray"), None) {
+            after = Some(h);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            let ours = process_path(pid).and_then(|p| p.parent().map(|d| d.as_os_str().eq_ignore_ascii_case(dir))).unwrap_or(false);
+            if ours {
+                let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+                closing.push(h);
+            } else {
+                other = true;
+            }
+        }
+        for _ in 0..60 {
+            if !closing.iter().any(|&h| IsWindow(Some(h)).as_bool()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    other
+}
+
+/// Runs `exe args` unelevated, through the desktop shell.
+fn run_as_user(exe: &Path, args: &str) -> windows::core::Result<()> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let windows: IShellWindows = CoCreateInstance(&ShellWindows, None, CLSCTX_LOCAL_SERVER)?;
+        let mut hwnd = 0i32;
+        let desktop = windows.FindWindowSW(&VARIANT::from(CSIDL_DESKTOP as i32), &VARIANT::default(), SWC_DESKTOP, &mut hwnd, SWFO_NEEDDISPATCH)?;
+        let browser: IShellBrowser = desktop.cast::<IServiceProvider>()?.QueryService(&SID_STopLevelBrowser)?;
+        let view: IShellFolderViewDual = browser.QueryActiveShellView()?.GetItemObject::<IDispatch>(SVGIO_BACKGROUND)?.cast()?;
+        let shell: IShellDispatch2 = view.Application()?.cast()?;
+        let dir = exe.parent().map_or(String::new(), |d| d.display().to_string());
+        shell.ShellExecute(&BSTR::from(exe.display().to_string()), &VARIANT::from(args), &VARIANT::from(dir.as_str()), &VARIANT::from(""), &VARIANT::from(SW_SHOWNORMAL.0))
+    }
 }
 
 fn configure_service(s: &Sc) {

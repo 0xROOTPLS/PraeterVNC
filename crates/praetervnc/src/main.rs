@@ -11,6 +11,7 @@ praetervnc [options]             console server
   --port N  --bind ADDR  --password PW  --monitor N | --list  --view-only  --verbose
   --inflight N  --alr-ms N  --budget-ms N  --no-scroll  --no-motion  --no-pipeline
 praetervnc --install | --uninstall   install or remove the Windows service (admin)
+praetervnc --start | --stop          start or stop the service (admin)
 praetervnc --settings | --tray        service settings / service tray icon
 praetervnc --licenses                license and third-party notices";
 
@@ -56,6 +57,12 @@ fn main() {
         Some("--settings") => elevate_or(gui::settings_standalone, "--settings"),
         Some("--install") => elevate_or(|| finish(install::install()), "--install"),
         Some("--uninstall") => elevate_or(|| finish(install::uninstall()), "--uninstall"),
+        Some("--start") => elevate_or(|| finish(install::start().map(|_| String::new())), "--start"),
+        Some("--stop") => elevate_or(|| finish(install::stop().map(|_| String::new())), "--stop"),
+        #[cfg(debug_assertions)]
+        Some("--preview") => gui::preview(args.get(1).map_or(Store::Registry, |p| Store::Ini(p.into()))),
+        #[cfg(debug_assertions)]
+        Some("--preview-tray") => gui::preview_tray(args.get(1).map(|p| Store::Ini(p.into()))),
         Some("--help" | "-h" | "/?") => usage(),
         Some("--licenses") if console() => println!("{LICENSES}"),
         Some("--licenses") => report("Run praetervnc --licenses from a command prompt, or see THIRD-PARTY-NOTICES.txt.", false),
@@ -80,6 +87,7 @@ fn elevate_or(f: impl FnOnce(), arg: &str) {
 
 fn finish(r: Result<String, String>) {
     match r {
+        Ok(m) if m.is_empty() => {}
         Ok(m) => report(&m, false),
         Err(e) => {
             report(&e, true);

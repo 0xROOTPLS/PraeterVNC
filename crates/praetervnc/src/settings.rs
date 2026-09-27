@@ -1,6 +1,6 @@
 //! Persisted settings: HKLM for the service, an ini next to the exe for portable use.
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
@@ -42,9 +42,21 @@ pub fn exe_path() -> PathBuf {
     std::env::current_exe().unwrap_or_default()
 }
 
+fn portable_ini(exe: &Path, local_app_data: &Path) -> PathBuf {
+    let here = exe.with_file_name("praetervnc.ini");
+    let app = local_app_data.join("PraeterVNC").join("praetervnc.ini");
+    if here.exists() || !app.exists() && exe.parent().is_some_and(writable) { here } else { app }
+}
+
+fn writable(dir: &Path) -> bool {
+    let p = dir.join(".praeter-w");
+    std::fs::write(&p, b"").is_ok() && std::fs::remove_file(&p).is_ok()
+}
+
 impl Store {
+    /// Next to the exe, or %LOCALAPPDATA%\PraeterVNC if that folder is read-only.
     pub fn portable() -> Store {
-        Store::Ini(exe_path().with_file_name("praetervnc.ini"))
+        Store::Ini(portable_ini(&exe_path(), Path::new(&std::env::var("LOCALAPPDATA").unwrap_or_default())))
     }
 
     pub fn load(&self) -> Settings {
@@ -69,6 +81,9 @@ impl Store {
                     "port={}\npassword={}\nremote={}\nview_only={}\nmonitor={}\nmax_attempts={}\nblock_seconds={}\n",
                     s.port, blob, s.remote as u8, s.view_only as u8, s.monitor.map_or("all".into(), |m| m.to_string()), s.max_attempts, s.block_secs
                 );
+                if let Some(d) = p.parent() {
+                    std::fs::create_dir_all(d)?;
+                }
                 std::fs::write(p, t)
             }
         }
@@ -266,5 +281,21 @@ mod tests {
         st.save(&s, None).unwrap();
         assert_eq!(st.load().password.as_deref(), Some("secret"));
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn portable_fallback() {
+        let d = std::env::temp_dir().join(format!("praeter-portable-{}", std::process::id()));
+        let (dir, app) = (d.join("exe"), d.join("app"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("praetervnc.exe");
+        let app_ini = app.join("PraeterVNC").join("praetervnc.ini");
+        assert_eq!(portable_ini(&exe, &app), dir.join("praetervnc.ini"));
+        assert_eq!(portable_ini(&d.join("missing").join("praetervnc.exe"), &app), app_ini);
+        Store::Ini(app_ini.clone()).save(&Settings::default(), None).unwrap();
+        assert_eq!(portable_ini(&exe, &app), app_ini);
+        std::fs::write(dir.join("praetervnc.ini"), "").unwrap();
+        assert_eq!(portable_ini(&exe, &app), dir.join("praetervnc.ini"));
+        let _ = std::fs::remove_dir_all(d);
     }
 }
